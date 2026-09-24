@@ -21,6 +21,7 @@ Abre la URL que indique Vite. Para compilar: `npm run build`. Para revisar la co
 |---|---|
 | `/productos` | Catálogo, búsqueda, categorías, orden por precio y filtro de stock |
 | `/productos/:id` | Detalle, especificaciones, precio y unidades disponibles |
+| `/carrito` | Carrito persistente, cantidades, total, validación de stock y confirmación |
 | `/login` | Inicio de sesión |
 | `/registro` | Registro con confirmación de contraseña |
 | `/perfil` | Consulta y edición de nombre, listado y alta de direcciones |
@@ -31,7 +32,7 @@ El flujo de compra llama al microservicio de órdenes, que coordina inventario y
 ## Modo demo
 
 Activo por defecto (`VITE_USE_MOCKS=true`). Cuenta de usuario: **demo@cloudshop.pe** / **CloudShop123**. Cuenta administradora para revisar `/admin`: **admin@cloudshop.pe** / **AdminPass123**.
-Permite probar registro, login, edición de nombre, direcciones, compra, reseñas y administración. Los datos viven en memoria y desaparecen al recargar; no se guarda nada en una base de datos. La pestaña Analítica muestra que Athena no está conectado en este modo y no inventa resultados. No usar datos personales reales ni estas credenciales en producción.
+Permite probar registro, login, edición de nombre, direcciones, carrito, compra, reseñas y administración. La sesión y el carrito se guardan en `localStorage`; los demás datos demo viven en memoria y se reinician al recargar. La pestaña Analítica muestra que Athena no está conectado en este modo y no inventa resultados. No usar datos personales reales ni estas credenciales en producción.
 
 ## Conectar el API Gateway
 
@@ -56,6 +57,7 @@ Los servicios del frontend usan las rutas implementadas en el repositorio de bac
 | POST | `/usuarios/{id}/direcciones` | `{direccion,distrito,ciudad,pais}` → dirección con `id` |
 | GET | `/api/catalogo/productos` | `{data,total,page,limit,pages}` |
 | GET | `/api/catalogo/productos/{id}` | `{data:{...producto}}`; 404 si no existe |
+| POST | `/ordenes/previsualizar` | Valida precios y stock sin modificar inventario |
 | POST | `/ordenes/confirmar` | Confirma compra y devuelve la orden |
 | GET | `/usuarios/{id}/ventas` | Historial de compras |
 | GET/POST | `/productos/{id}/resenas` | Consultar o crear reseñas |
@@ -63,7 +65,7 @@ Los servicios del frontend usan las rutas implementadas en el repositorio de bac
 
 `productService.js` adapta los campos del catálogo para la interfaz: `categoria_nombre` pasa a `categoria` y `stock_disponible` a `stock`. Las propiedades `tipo` y `color` solo apoyan las ilustraciones de la demo.
 
-El login envía JSON. El frontend envía el token como `Authorization: Bearer`; lo conserva solo en memoria y solicita iniciar sesión nuevamente al recargar. El backend valida la autorización en cada operación, incluida analítica para rol `admin`. Habilitar CORS para el origen Amplify y local, los métodos GET/POST/PATCH/DELETE/OPTIONS y los headers Content-Type/Authorization. Los errores del backend se muestran en la interfaz; no hay fallback silencioso a demo si falla la API.
+El login envía JSON. El frontend envía el token como `Authorization: Bearer` y conserva la sesión en `localStorage` para mantener usuario y rol al recargar; cerrar sesión elimina esos datos. El backend valida la autorización en cada operación, incluida analítica para rol `admin`. Habilitar CORS para el origen Amplify y local, los métodos GET/POST/PATCH/DELETE/OPTIONS y los headers Content-Type/Authorization. Los errores del backend se muestran en la interfaz; no hay fallback silencioso a demo si falla la API.
 
 ## Desplegar en AWS Amplify Hosting
 
@@ -74,7 +76,7 @@ El login envía JSON. El frontend envía el token como `Authorization: Bearer`; 
 3. Usa el `amplify.yml` de la raíz: `npm ci`, `npm run build`, artefactos `dist` dentro de frontend. Usa Node.js 22 o superior.
 4. Para demo configura `VITE_USE_MOCKS=true`. Para APIs reales, configura las variables del apartado anterior.
 5. Compila y despliega. En **Hosting → Rewrites and redirects**, importa el contenido de `frontend/amplify-rewrites.json`. Es una reescritura HTTP **200** a `/index.html` para navegación SPA. Este JSON es una referencia para la consola, **Amplify no lo aplica automáticamente**.
-6. Comprueba la URL pública y recarga directamente `/productos/1`, `/login` y `/perfil`. Esta última redirigirá al login si no hay sesión en memoria.
+6. Comprueba la URL pública y recarga directamente `/productos/1`, `/carrito`, `/login` y `/perfil`. Esta última redirigirá al login si no hay una sesión guardada.
 
 ### Carga manual
 
