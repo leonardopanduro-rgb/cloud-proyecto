@@ -1,0 +1,505 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CloudShop compute layer: database, two application hosts and ingestion host.
+  Every host clones leonardopanduro-rgb/cloud-proyecto and starts Docker workloads.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Existing foundation
+        Parameters:
+          - FoundationStackName
+      - Label:
+          default: EC2
+        Parameters:
+          - ProjectName
+          - KeyName
+          - LatestAmiId
+          - InstanceType
+          - LabInstanceProfileName
+      - Label:
+          default: Source code
+        Parameters:
+          - RepositoryUrl
+          - RepositoryBranch
+      - Label:
+          default: Application configuration
+        Parameters:
+          - FrontendOrigin
+          - AdminEmails
+          - MySqlPassword
+          - MySqlRootPassword
+          - PostgresPassword
+          - IngestionMySqlPassword
+          - IngestionPostgresPassword
+          - JwtSecret
+
+Parameters:
+  FoundationStackName:
+    Type: String
+    Default: cloudshop-foundation
+    Description: Name used when deploying 01-foundation.yaml.
+  ProjectName:
+    Type: String
+    Default: cloudshop
+    AllowedPattern: '[a-z][a-z0-9-]{2,20}'
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+  LabInstanceProfileName:
+    Type: String
+    Default: LabInstanceProfile
+    Description: Existing AWS Academy instance profile.
+  RepositoryUrl:
+    Type: String
+    Default: https://github.com/leonardopanduro-rgb/cloud-proyecto.git
+  RepositoryBranch:
+    Type: String
+    Default: main
+    AllowedPattern: '[A-Za-z0-9._/-]+'
+  FrontendOrigin:
+    Type: String
+    Default: https://main.d1hnxbe1zwqmow.amplifyapp.com
+    AllowedPattern: 'https://.+'
+  AdminEmails:
+    Type: String
+    Default: admin@cloudshop.pe
+  MySqlPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 40
+    AllowedPattern: '[A-Za-z0-9_!.-]+'
+  MySqlRootPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 40
+    AllowedPattern: '[A-Za-z0-9_!.-]+'
+  PostgresPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 40
+    AllowedPattern: '[A-Za-z0-9_!.-]+'
+  IngestionMySqlPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 40
+    AllowedPattern: '[A-Za-z0-9_!.-]+'
+    Description: Read-only password used by the catalog ingestion container.
+  IngestionPostgresPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 40
+    AllowedPattern: '[A-Za-z0-9_!.-]+'
+    Description: Read-only password used by the users ingestion container.
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 128
+    AllowedPattern: '[A-Za-z0-9._-]+'
+
+Resources:
+  DataInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref LabInstanceProfileName
+      SubnetId:
+        Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub '${FoundationStackName}-DataSecurityGroupId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 30
+            VolumeType: gp3
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 2
+        HttpTokens: required
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-data'
+        - Key: Role
+          Value: data
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > >(tee /var/log/cloudshop-bootstrap.log | logger -t cloudshop-bootstrap -s 2>/dev/console) 2>&1
+          export DEBIAN_FRONTEND=noninteractive
+
+          apt-get update -y
+          apt-get install -y ca-certificates curl git
+          curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+          sh /tmp/get-docker.sh
+          systemctl enable --now docker
+
+          for attempt in 1 2 3 4 5; do
+            git clone --depth 1 --branch ${RepositoryBranch} ${RepositoryUrl} /opt/cloudshop && break
+            rm -rf /opt/cloudshop
+            sleep 15
+          done
+
+          cd /opt/cloudshop/backend
+          sed -i 's/ingesta_my_readonly/${IngestionMySqlPassword}/g' products/init.sql
+          sed -i 's/ingesta_pg_readonly/${IngestionPostgresPassword}/g' postgres-init/01_esquema.sql
+          umask 077
+          cat > .env <<'ENVFILE'
+          DOCKERHUB_USER=local
+          MYSQL_HOST=127.0.0.1
+          MYSQL_PORT=3306
+          MYSQL_DATABASE=cloudshop_catalogo
+          MYSQL_USER=cloud_user
+          MYSQL_PASSWORD=${MySqlPassword}
+          MYSQL_ROOT_PASSWORD=${MySqlRootPassword}
+          PG_USER=cloud_user
+          PG_PASSWORD=${PostgresPassword}
+          PG_DATABASE=cloudshop_usuarios
+          DATABASE_URL=postgresql+psycopg2://cloud_user:${PostgresPassword}@127.0.0.1:5432/cloudshop_usuarios
+          MONGO_URI=mongodb://127.0.0.1:27017/cloudshop_ventas
+          ENVFILE
+          chmod 600 .env
+          docker compose -f docker-compose.datos.yml up -d
+
+  AppInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref LabInstanceProfileName
+      SubnetId:
+        Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub '${FoundationStackName}-AppSecurityGroupId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 25
+            VolumeType: gp3
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 2
+        HttpTokens: required
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-app-1'
+        - Key: Role
+          Value: application
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee /var/log/cloudshop-bootstrap.log | logger -t cloudshop-bootstrap -s 2>/dev/console) 2>&1
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update -y
+            apt-get install -y ca-certificates curl git netcat-openbsd python3-pip
+            curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+            sh /tmp/get-docker.sh
+            systemctl enable --now docker
+            fallocate -l 3G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+            for attempt in 1 2 3 4 5; do
+              git clone --depth 1 --branch ${RepositoryBranch} ${RepositoryUrl} /opt/cloudshop && break
+              rm -rf /opt/cloudshop
+              sleep 15
+            done
+
+            for attempt in $(seq 1 90); do
+              nc -z ${DataIp} 3306 && nc -z ${DataIp} 5432 && nc -z ${DataIp} 27017 && break
+              sleep 10
+            done
+
+            cd /opt/cloudshop/backend
+            umask 077
+            export COMPOSE_PARALLEL_LIMIT=1
+            cat > .env <<'ENVFILE'
+            DOCKERHUB_USER=local
+            MYSQL_HOST=${DataIp}
+            MYSQL_PORT=3306
+            MYSQL_DATABASE=cloudshop_catalogo
+            MYSQL_USER=cloud_user
+            MYSQL_PASSWORD=${MySqlPassword}
+            MYSQL_ROOT_PASSWORD=${MySqlRootPassword}
+            PG_USER=cloud_user
+            PG_PASSWORD=${PostgresPassword}
+            PG_DATABASE=cloudshop_usuarios
+            DATABASE_URL=postgresql+psycopg2://cloud_user:${PostgresPassword}@${DataIp}:5432/cloudshop_usuarios
+            MONGO_URI=mongodb://${DataIp}:27017/cloudshop_ventas
+            JWT_SECRET=${JwtSecret}
+            JWT_ALGORITHM=HS256
+            JWT_EXPIRE_MINUTES=60
+            CORS_ORIGINS=${FrontendOrigin},http://localhost:5173
+            ADMIN_EMAILS=${AdminEmails}
+            AWS_REGION=${AWS::Region}
+            ATHENA_DATABASE=cloudshop_analytics
+            ATHENA_WORKGROUP=cloudshop-wg
+            ATHENA_OUTPUT_S3=s3://${BucketName}/athena-results/
+            ENVFILE
+            chmod 600 .env
+
+            cd /opt/cloudshop/Data/scripts
+            cp /opt/cloudshop/backend/.env .env
+            pip3 install --no-cache-dir pymysql 'psycopg[binary]' pymongo python-dotenv
+            LOAD_OK=0
+            for attempt in $(seq 1 30); do
+              if PYTHONPATH=src python3 -m scripts.load_csv_bd; then
+                LOAD_OK=1
+                break
+              fi
+              sleep 10
+            done
+            test "$LOAD_OK" = 1
+
+            cd /opt/cloudshop/backend
+            docker compose up -d --build
+          - DataIp: !GetAtt DataInstance.PrivateIp
+            BucketName:
+              Fn::ImportValue: !Sub '${FoundationStackName}-DataLakeBucketName'
+
+  AppInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref LabInstanceProfileName
+      SubnetId:
+        Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBId'
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub '${FoundationStackName}-AppSecurityGroupId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 25
+            VolumeType: gp3
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 2
+        HttpTokens: required
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-app-2'
+        - Key: Role
+          Value: application
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee /var/log/cloudshop-bootstrap.log | logger -t cloudshop-bootstrap -s 2>/dev/console) 2>&1
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update -y
+            apt-get install -y ca-certificates curl git netcat-openbsd
+            curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+            sh /tmp/get-docker.sh
+            systemctl enable --now docker
+            fallocate -l 3G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+            for attempt in 1 2 3 4 5; do
+              git clone --depth 1 --branch ${RepositoryBranch} ${RepositoryUrl} /opt/cloudshop && break
+              rm -rf /opt/cloudshop
+              sleep 15
+            done
+
+            for attempt in $(seq 1 90); do
+              nc -z ${DataIp} 3306 && nc -z ${DataIp} 5432 && nc -z ${DataIp} 27017 && break
+              sleep 10
+            done
+
+            cd /opt/cloudshop/backend
+            umask 077
+            export COMPOSE_PARALLEL_LIMIT=1
+            cat > .env <<'ENVFILE'
+            DOCKERHUB_USER=local
+            MYSQL_HOST=${DataIp}
+            MYSQL_PORT=3306
+            MYSQL_DATABASE=cloudshop_catalogo
+            MYSQL_USER=cloud_user
+            MYSQL_PASSWORD=${MySqlPassword}
+            MYSQL_ROOT_PASSWORD=${MySqlRootPassword}
+            PG_USER=cloud_user
+            PG_PASSWORD=${PostgresPassword}
+            PG_DATABASE=cloudshop_usuarios
+            DATABASE_URL=postgresql+psycopg2://cloud_user:${PostgresPassword}@${DataIp}:5432/cloudshop_usuarios
+            MONGO_URI=mongodb://${DataIp}:27017/cloudshop_ventas
+            JWT_SECRET=${JwtSecret}
+            JWT_ALGORITHM=HS256
+            JWT_EXPIRE_MINUTES=60
+            CORS_ORIGINS=${FrontendOrigin},http://localhost:5173
+            ADMIN_EMAILS=${AdminEmails}
+            AWS_REGION=${AWS::Region}
+            ATHENA_DATABASE=cloudshop_analytics
+            ATHENA_WORKGROUP=cloudshop-wg
+            ATHENA_OUTPUT_S3=s3://${BucketName}/athena-results/
+            ENVFILE
+            chmod 600 .env
+            docker compose up -d --build
+          - DataIp: !GetAtt DataInstance.PrivateIp
+            BucketName:
+              Fn::ImportValue: !Sub '${FoundationStackName}-DataLakeBucketName'
+
+  IngestionInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: AppInstance1
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref LabInstanceProfileName
+      SubnetId:
+        Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub '${FoundationStackName}-IngestionSecurityGroupId'
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 20
+            VolumeType: gp3
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 2
+        HttpTokens: required
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ingestion'
+        - Key: Role
+          Value: ingestion
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee /var/log/cloudshop-bootstrap.log | logger -t cloudshop-bootstrap -s 2>/dev/console) 2>&1
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update -y
+            apt-get install -y ca-certificates curl git
+            curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+            sh /tmp/get-docker.sh
+            systemctl enable --now docker
+            fallocate -l 2G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+
+            for attempt in 1 2 3 4 5; do
+              git clone --depth 1 --branch ${RepositoryBranch} ${RepositoryUrl} /opt/cloudshop && break
+              rm -rf /opt/cloudshop
+              sleep 15
+            done
+
+            cd /opt/cloudshop/Ingesta
+            export COMPOSE_PARALLEL_LIMIT=1
+            cat > .env <<'ENVFILE'
+            DOCKERHUB_USER=local
+            ENVFILE
+            cat > ingesta-usuarios/.env <<'ENVFILE'
+            POSTGRES_HOST=${DataIp}
+            POSTGRES_PORT=5432
+            POSTGRES_DB=cloudshop_usuarios
+            POSTGRES_USER=ingesta_pg
+            POSTGRES_PASSWORD=${IngestionPostgresPassword}
+            S3_BUCKET=${BucketName}
+            AWS_DEFAULT_REGION=${AWS::Region}
+            ENVFILE
+            cat > ingesta-catalogo/.env <<'ENVFILE'
+            MYSQL_HOST=${DataIp}
+            MYSQL_PORT=3306
+            MYSQL_DB=cloudshop_catalogo
+            MYSQL_USER=ingesta_my
+            MYSQL_PASSWORD=${IngestionMySqlPassword}
+            S3_BUCKET=${BucketName}
+            AWS_DEFAULT_REGION=${AWS::Region}
+            ENVFILE
+            cat > ingesta-ventas/.env <<'ENVFILE'
+            MONGO_URI=mongodb://${DataIp}:27017/cloudshop_ventas
+            MONGO_DB=cloudshop_ventas
+            S3_BUCKET=${BucketName}
+            AWS_DEFAULT_REGION=${AWS::Region}
+            ENVFILE
+            chmod 600 .env ingesta-usuarios/.env ingesta-catalogo/.env ingesta-ventas/.env
+
+            for attempt in $(seq 1 90); do
+              PRODUCTS=$(docker run --rm mysql:8.4 mysql -h ${DataIp} -uingesta_my -p${IngestionMySqlPassword} -Nse 'SELECT COUNT(*) FROM cloudshop_catalogo.productos' 2>/dev/null || echo 0)
+              USERS=$(docker run --rm -e PGPASSWORD=${IngestionPostgresPassword} postgres:16-alpine psql -h ${DataIp} -U ingesta_pg -d cloudshop_usuarios -tAc 'SELECT COUNT(*) FROM usuarios' 2>/dev/null || echo 0)
+              SALES=$(docker run --rm mongo:7 mongosh 'mongodb://${DataIp}:27017/cloudshop_ventas' --quiet --eval 'db.ventas.countDocuments()' 2>/dev/null || echo 0)
+              if [ "$PRODUCTS" -gt 0 ] && [ "$USERS" -gt 0 ] && [ "$SALES" -gt 0 ]; then break; fi
+              sleep 20
+            done
+
+            docker compose build
+            docker compose run --rm ingesta-usuarios
+            docker compose run --rm ingesta-catalogo
+            docker compose run --rm ingesta-ventas
+          - DataIp: !GetAtt DataInstance.PrivateIp
+            BucketName:
+              Fn::ImportValue: !Sub '${FoundationStackName}-DataLakeBucketName'
+
+Outputs:
+  DataInstanceId:
+    Value: !Ref DataInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-DataInstanceId'
+  DataPrivateIp:
+    Value: !GetAtt DataInstance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-DataPrivateIp'
+  AppInstance1Id:
+    Value: !Ref AppInstance1
+    Export:
+      Name: !Sub '${AWS::StackName}-AppInstance1Id'
+  AppInstance2Id:
+    Value: !Ref AppInstance2
+    Export:
+      Name: !Sub '${AWS::StackName}-AppInstance2Id'
+  IngestionInstanceId:
+    Value: !Ref IngestionInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-IngestionInstanceId'
+  AppInstance1PublicIp:
+    Value: !GetAtt AppInstance1.PublicIp
+  AppInstance2PublicIp:
+    Value: !GetAtt AppInstance2.PublicIp
+  DataInstancePublicIp:
+    Value: !GetAtt DataInstance.PublicIp
+  IngestionInstancePublicIp:
+    Value: !GetAtt IngestionInstance.PublicIp

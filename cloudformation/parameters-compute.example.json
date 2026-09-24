@@ -1,0 +1,46 @@
+[
+  {
+    "ParameterKey": "FoundationStackName",
+    "ParameterValue": "cloudshop-foundation"
+  },
+  {
+    "ParameterKey": "RepositoryUrl",
+    "ParameterValue": "https://github.com/leonardopanduro-rgb/cloud-proyecto.git"
+  },
+  {
+    "ParameterKey": "RepositoryBranch",
+    "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "FrontendOrigin",
+    "ParameterValue": "https://REEMPLAZAR.amplifyapp.com"
+  },
+  {
+    "ParameterKey": "AdminEmails",
+    "ParameterValue": "admin@cloudshop.pe"
+  },
+  {
+    "ParameterKey": "MySqlPassword",
+    "ParameterValue": "REEMPLAZAR_EN_LA_CONSOLA"
+  },
+  {
+    "ParameterKey": "MySqlRootPassword",
+    "ParameterValue": "REEMPLAZAR_EN_LA_CONSOLA"
+  },
+  {
+    "ParameterKey": "PostgresPassword",
+    "ParameterValue": "REEMPLAZAR_EN_LA_CONSOLA"
+  },
+  {
+    "ParameterKey": "IngestionMySqlPassword",
+    "ParameterValue": "REEMPLAZAR_EN_LA_CONSOLA"
+  },
+  {
+    "ParameterKey": "IngestionPostgresPassword",
+    "ParameterValue": "REEMPLAZAR_EN_LA_CONSOLA"
+  },
+  {
+    "ParameterKey": "JwtSecret",
+    "ParameterValue": "REEMPLAZAR_CON_UN_SECRETO_DE_32_CARACTERES"
+  }
+]

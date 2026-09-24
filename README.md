@@ -32,8 +32,11 @@ Ingesta/                  MV de ingesta (contenedores Python → S3)
 ├── ingesta-catalogo/     MySQL → categorias, productos, inventario, movimientos_stock
 └── docker-compose.yml    orquesta los contenedores de ingesta
 
-infrastructure/           Infraestructura como código (CloudFormation)
-└── cloudformation.yaml   VPC, subredes, Security Groups, 4 MV, S3
+cloudformation/           Infraestructura completa como código
+├── 01-foundation.yaml    VPC, subredes, Security Groups y S3
+├── 02-compute.yaml       4 EC2 y arranque automatizado de contenedores
+├── 03-edge-analytics.yaml  ALB, API Gateway, Glue y Athena
+└── README.md             Despliegue paso a paso desde la consola
 
 Proposal/                 Documentos de sustentación
 ├── 03_Sustentacion_final.md   ← documento principal (backend + datos)
@@ -53,20 +56,15 @@ Proposal/                 Documentos de sustentación
 - 25,000 movimientos de stock (procedimiento almacenado)
 - **Total: ~76,000 registros operacionales**
 
-**Infraestructura (primer entregable):**
-- `infrastructure/cloudformation.yaml` despliega la VPC, los Security Groups (app, base de datos privada, ingesta), las 4 MV (2 de aplicación + datos + ingesta) y el bucket S3. La MV de ingesta reutiliza el instance profile del laboratorio `LabInstanceProfile`.
-- `Ingesta/` contiene los contenedores Python que extraen el 100 % de los registros y los cargan en S3 (usuarios + catálogo).
-- Guía paso a paso: `DESPLIEGUE_AWS.md`.
-
-**Pendiente:**
-- Microservicio de Reseñas (Node.js + MongoDB) y su contenedor `ingesta-ventas`
-- Microservicio de Órdenes (orquestador)
-- Glue (catálogo de datos) + Athena (consultas y vistas) + Microservicio analítico
-- API Gateway + NLB privado + segunda MV de producción
-- Frontend en AWS Amplify
+**Infraestructura completa:**
+- Tres stacks de CloudFormation crean VPC, Security Groups, bucket S3, cuatro EC2, ALB interno, API Gateway HTTPS, Glue y Athena.
+- Dos EC2 de aplicación ejecutan los cinco microservicios: catálogo, usuarios, ventas/reseñas, órdenes y analítica.
+- La EC2 de ingesta extrae PostgreSQL, MySQL y MongoDB hacia S3; Glue cataloga los datos para Athena.
+- El frontend actualizado se construye desde `frontend/` y se conecta por la URL HTTPS de API Gateway.
 
 ## Quickstart
 
+Despliegue completo reproducible con CloudFormation: ver `cloudformation/README.md`.
 Despliegue completo en AWS desde el navegador (sin terminal local): ver `DESPLIEGUE_AWS_CONSOLA.md`.
 Despliegue con terminal local: ver `DESPLIEGUE_AWS_MANUAL.md`.
 Despliegue manual de las VMs: ver `backend/DESPLIEGUE.md`.
@@ -82,6 +80,7 @@ uv run python -m scripts.load_csv_bd --dry-run  # validar
 
 ## Documentación
 
+- **CloudFormation completo (recomendado)**: `cloudformation/README.md`
 - **Sustentación final**: `Proposal/03_Sustentacion_final.md`
 - **Despliegue en AWS (paso a paso, con terminal local)**: `DESPLIEGUE_AWS_MANUAL.md`
 - **Despliegue en AWS (100 % desde el navegador, sin terminal local)**: `DESPLIEGUE_AWS_CONSOLA.md`
