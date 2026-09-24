@@ -1,0 +1,27 @@
+# Variables de entorno (nunca versionar secretos)
+.env
+*.env
+!*.env.example
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Frontend / Node.js
+node_modules/
+dist/
+npm-debug.log*
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Configuración de IDE
+.idea/
+.vscode/

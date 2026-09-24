@@ -1,0 +1,120 @@
+# VM de desarrollo/aplicación: los cinco microservicios.
+# Las bases de datos NO viven aquí: corren en la VM de datos
+# (Backend/docker-compose.datos.yml) y se alcanzan por IP privada.
+#
+# Uso en la MV de desarrollo (donde se construyen las imágenes):
+#   cp .env.example .env && nano .env   # definir IP de la VM de datos, claves, JWT, CORS y DOCKERHUB_USER
+#   docker compose build
+#   docker login
+#   docker compose push
+#
+# Uso en las MV de producción (app-1 y app-2, solo descargan las imágenes ya publicadas):
+#   docker compose pull
+#   docker compose up -d
+
+services:
+  catalogo:
+    build: ./products
+    image: ${DOCKERHUB_USER:?Define DOCKERHUB_USER en .env (tu usuario de Docker Hub)}/cloudshop-catalogo:latest
+    container_name: cloudshop-catalogo
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST:?Define MYSQL_HOST en .env (IP privada de la VM de datos)}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:?Define MYSQL_USER en .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Define MYSQL_PASSWORD en .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-cloudshop_catalogo}
+      JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET en .env (mismo valor que el microservicio de usuarios)}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  usuarios:
+    build: ./users-address
+    image: ${DOCKERHUB_USER:?Define DOCKERHUB_USER en .env}/cloudshop-usuarios:latest
+    container_name: cloudshop-usuarios
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Define DATABASE_URL en .env (IP privada de la VM de datos)}
+      JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET en .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ventas-resenas:
+    build: ./ventas-resenas
+    image: ${DOCKERHUB_USER:?Define DOCKERHUB_USER en .env}/cloudshop-ventas-resenas:latest
+    container_name: cloudshop-ventas-resenas
+    restart: unless-stopped
+    environment:
+      MONGO_URI: ${MONGO_URI:?Define MONGO_URI en .env (IP privada de la VM de datos)}
+      JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET en .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      PORT: "8002"
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8002/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ordenes:
+    build: ./ordenes
+    image: ${DOCKERHUB_USER:?Define DOCKERHUB_USER en .env}/cloudshop-ordenes:latest
+    container_name: cloudshop-ordenes
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET en .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      CATALOGO_URL: http://catalogo:8080
+      VENTAS_URL: http://ventas-resenas:8002
+    ports:
+      - "8003:8003"
+    depends_on:
+      - catalogo
+      - ventas-resenas
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  analitica:
+    build: ./analitica
+    image: ${DOCKERHUB_USER:?Define DOCKERHUB_USER en .env}/cloudshop-analitica:latest
+    container_name: cloudshop-analitica
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET en .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      ATHENA_DATABASE: ${ATHENA_DATABASE:-cloudshop_analytics}
+      ATHENA_WORKGROUP: ${ATHENA_WORKGROUP:-primary}
+      ATHENA_OUTPUT_S3: ${ATHENA_OUTPUT_S3:-}
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
